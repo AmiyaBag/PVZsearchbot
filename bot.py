@@ -1,20 +1,13 @@
 import os
 import telebot
-from flask import Flask, request
 import time
 
-# ---------- НАСТРОЙКИ ----------
-TOKEN = os.getenv('BOT_TOKEN')
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # или BOT_TOKEN, смотрите как названа переменная
 if not TOKEN:
-    raise ValueError("❌ Переменная окружения BOT_TOKEN не задана!")
-
-# URL для вебхука (задаётся в переменной окружения на хостинге)
-WEBHOOK_URL = "https://bot_1770985044_4041_amiyabag.bothost.ru"
+    raise ValueError("❌ Токен не задан!")
 
 bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
 
-# ---------- ХРАНЕНИЕ НАСТРОЕК ПОЛЬЗОВАТЕЛЕЙ (в памяти) ----------
 user_settings = {}
 
 def get_max_cell(chat_id):
@@ -191,27 +184,8 @@ def help(message):
         reply_markup=main_menu()
     )
 
-# ---------- ВЕБХУК ----------
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    json_str = request.get_data().decode('UTF-8')
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return 'OK', 200
-
-@app.route('/set_webhook')
-def set_webhook():
-    bot.remove_webhook()
-    time.sleep(0.5)
-    bot.set_webhook(url=WEBHOOK_URL + '/webhook')
-    return f"✅ Webhook set to {WEBHOOK_URL}/webhook", 200
-
-@app.route('/')
-def index():
-    return 'Бот работает!', 200
-
 # ---------- ЗАПУСК ----------
 if __name__ == '__main__':
     print("🚀 Запуск бота в режиме polling...")
-    bot.remove_webhook()  # обязательно удаляем вебхук, если вдруг остался
+    bot.remove_webhook()
     bot.infinity_polling()
