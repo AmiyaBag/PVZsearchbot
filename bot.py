@@ -1,15 +1,22 @@
 import os
 import telebot
-from dotenv import load_dotenv
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from flask import Flask, request
+import time
 
-load_dotenv()
+# ---------- НАСТРОЙКИ ----------
 TOKEN = os.getenv('BOT_TOKEN')
-bot = telebot.TeleBot(TOKEN)
+if not TOKEN:
+    raise ValueError("❌ Переменная окружения BOT_TOKEN не задана!")
 
-# ------------------------------------------------------------
-# 1. Настройки пользователей (в памяти)
-# ------------------------------------------------------------
+# URL для вебхука (задаётся в переменной окружения на хостинге)
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+if not WEBHOOK_URL:
+    raise ValueError("❌ Переменная окружения WEBHOOK_URL не задана!")
+
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
+
+# ---------- ХРАНЕНИЕ НАСТРОЕК ПОЛЬЗОВАТЕЛЕЙ (в памяти) ----------
 user_settings = {}
 
 def get_max_cell(chat_id):
@@ -20,63 +27,32 @@ def set_max_cell(chat_id, value):
         user_settings[chat_id] = {}
     user_settings[chat_id]["max_cell"] = value
 
-# ------------------------------------------------------------
-# 2. Переворот числа (180 градусов)
-# ------------------------------------------------------------
-ROTATE_DIGITS = {
-    '0': '0',
-    '1': '1',
-    '6': '9',
-    '8': '8',
-    '9': '6'
-}
+# ---------- ЛОГИКА ГЕНЕРАЦИИ ПОХОЖИХ НОМЕРОВ ----------
+ROTATE_DIGITS = {'0': '0', '1': '1', '6': '9', '8': '8', '9': '6'}
+COMMON_MISTAKES = {'6': '9', '9': '6', '1': '7', '7': '1', '0': '8', '8': '0'}
 
 def rotate_number(number):
     s = str(number)
     for ch in s:
         if ch not in ROTATE_DIGITS:
             return None
-    rotated_digits = [ROTATE_DIGITS[ch] for ch in reversed(s)]
-    rotated_str = ''.join(rotated_digits).lstrip('0')
-    if rotated_str == '':
-        return None
-    return int(rotated_str)
-
-# ------------------------------------------------------------
-# 3. Словарь частых ошибок
-# ------------------------------------------------------------
-COMMON_MISTAKES = {
-    '6': '9',
-    '9': '6',
-    '1': '7',
-    '7': '1',
-    '0': '8',
-    '8': '0',
-}
+    rotated = ''.join(ROTATE_DIGITS[ch] for ch in reversed(s)).lstrip('0')
+    return int(rotated) if rotated else None
 
 def apply_common_mistakes(number, max_cell):
     similar = set()
     num_str = str(number)
-
     for old_digit, new_digit in COMMON_MISTAKES.items():
         if old_digit in num_str:
-            new_num_str = num_str.replace(old_digit, new_digit)
-            new_num = int(new_num_str)
+            new_num = int(num_str.replace(old_digit, new_digit))
             if 1 <= new_num <= max_cell and new_num != number:
                 similar.add(new_num)
-
-    for old_digit, new_digit in COMMON_MISTAKES.items():
         if new_digit in num_str:
-            new_num_str = num_str.replace(new_digit, old_digit)
-            new_num = int(new_num_str)
+            new_num = int(num_str.replace(new_digit, old_digit))
             if 1 <= new_num <= max_cell and new_num != number:
                 similar.add(new_num)
-
     return similar
 
-# ------------------------------------------------------------
-# 4. Генерация похожих номеров
-# ------------------------------------------------------------
 def generate_similar_numbers(number, max_cell):
     similar = set()
     num_str = str(number)
@@ -84,10 +60,9 @@ def generate_similar_numbers(number, max_cell):
 
     # Замена одной цифры
     for i in range(length):
-        for digit in '0123456789':
-            if digit != num_str[i]:
-                new_num_str = num_str[:i] + digit + num_str[i+1:]
-                new_num = int(new_num_str)
+        for d in '0123456789':
+            if d != num_str[i]:
+                new_num = int(num_str[:i] + d + num_str[i+1:])
                 if 1 <= new_num <= max_cell and new_num != number:
                     similar.add(new_num)
 
@@ -100,89 +75,63 @@ def generate_similar_numbers(number, max_cell):
             if 1 <= new_num <= max_cell and new_num != number:
                 similar.add(new_num)
 
-    # Частые опечатки
+    # Частые ошибки
     similar.update(apply_common_mistakes(number, max_cell))
 
     # Переворот
     rotated = rotate_number(number)
-    if rotated is not None:
-        if 1 <= rotated <= max_cell and rotated != number:
-            similar.add(rotated)
+    if rotated and 1 <= rotated <= max_cell and rotated != number:
+        similar.add(rotated)
 
     return sorted(similar)[:20]
 
-# ------------------------------------------------------------
-# 5. Клавиатура главного меню (reply-кнопки)
-# ------------------------------------------------------------
+# ---------- КЛАВИАТУРА ----------
 def main_menu():
+    from telebot.types import ReplyKeyboardMarkup, KeyboardButton
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn1 = KeyboardButton("🔍 Проверить ячейку")
-    btn2 = KeyboardButton("⚙️ Установить максимум")
-    btn3 = KeyboardButton("📏 Текущий максимум")
-    btn4 = KeyboardButton("❓ Помощь")
-    markup.add(btn1, btn2, btn3, btn4)
+    markup.add(
+        KeyboardButton("🔍 Проверить ячейку"),
+        KeyboardButton("⚙️ Установить максимум"),
+        KeyboardButton("📏 Текущий максимум"),
+        KeyboardButton("❓ Помощь")
+    )
     return markup
 
-# ------------------------------------------------------------
-# 6. Команды и обработчики
-# ------------------------------------------------------------
+# ---------- ОБРАБОТЧИКИ КОМАНД ----------
 @bot.message_handler(commands=['start'])
 def start(message):
-    chat_id = message.chat.id
-    welcome_text = (
-        "Привет! Я помогу найти товар в похожих ячейках.\n\n"
-        "**Как работать:**\n"
+    bot.send_message(
+        message.chat.id,
+        "👋 Привет! Я помогу найти товар в похожих ячейках.\n\n"
+        "📌 **Как работать:**\n"
         "• Нажми кнопку «🔍 Проверить ячейку» и отправь номер.\n"
         "• Я покажу номера, которые легко перепутать:\n"
         "   — опечатки (одна неверная цифра)\n"
         "   — перестановка цифр\n"
         "   — частая путаница (6↔9, 1↔7 и т.п.)\n"
         "   — **стикер перевёрнут** (цифры вверх ногами)\n\n"
-        "**Настройки:**\n"
-        "• Кнопка «⚙️ Установить максимум» — задать максимальный номер ячейки на вашем складе.\n"
-        "• Кнопка «📏 Текущий максимум» — показать текущий.\n\n"
+        "⚙️ **Настройки:**\n"
+        "• Кнопка «⚙️ Установить максимум» — задать максимальный номер.\n"
+        "• Кнопка «📏 Текущий максимум» — показать текущий.",
+        parse_mode="Markdown",
+        reply_markup=main_menu()
     )
-    bot.send_message(chat_id, welcome_text, parse_mode="Markdown", reply_markup=main_menu())
-
-@bot.message_handler(commands=['setmax'])
-def setmax_command(message):
-    # Сохраняем состояние ожидания ввода нового максимума
-    chat_id = message.chat.id
-    msg = bot.send_message(chat_id, "🔢 Введите новый максимальный номер ячейки (например, 500):", reply_markup=ReplyKeyboardRemove())
-    bot.register_next_step_handler(msg, process_setmax)
-
-def process_setmax(message):
-    chat_id = message.chat.id
-    try:
-        value = int(message.text.strip())
-        if 10 <= value <= 2000:
-            set_max_cell(chat_id, value)
-            bot.send_message(chat_id, f"✅ Максимальный номер ячейки установлен: **{value}**", parse_mode="Markdown", reply_markup=main_menu())
-        else:
-            bot.send_message(chat_id, "❓ Введите число от 10 до 2000.", reply_markup=main_menu())
-    except ValueError:
-        bot.send_message(chat_id, "❓ Это не число. Попробуйте снова через кнопку меню.", reply_markup=main_menu())
-
-@bot.message_handler(commands=['showmax'])
-def showmax_command(message):
-    chat_id = message.chat.id
-    max_cell = get_max_cell(chat_id)
-    bot.send_message(chat_id, f"📏 Текущий максимум ячеек: **{max_cell}**", parse_mode="Markdown", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🔍 Проверить ячейку")
 def ask_cell(message):
-    chat_id = message.chat.id
-    msg = bot.send_message(chat_id, "🔢 Введите номер ячейки, где должен быть товар, но его нет:", reply_markup=ReplyKeyboardRemove())
+    msg = bot.send_message(
+        message.chat.id,
+        "🔢 Введите номер ячейки, где должен быть товар, но его нет:",
+        reply_markup=telebot.types.ReplyKeyboardRemove()
+    )
     bot.register_next_step_handler(msg, process_cell)
 
 def process_cell(message):
     chat_id = message.chat.id
-    text = message.text.strip()
-
     try:
-        number = int(text)
+        number = int(message.text.strip())
     except ValueError:
-        bot.send_message(chat_id, "❓ Пожалуйста, введите номер ячейки цифрами.", reply_markup=main_menu())
+        bot.send_message(chat_id, "❓ Введите число.", reply_markup=main_menu())
         return
 
     max_cell = get_max_cell(chat_id)
@@ -193,70 +142,90 @@ def process_cell(message):
     similar = generate_similar_numbers(number, max_cell)
 
     if not similar:
-        bot.send_message(chat_id, "😕 Похожих ячеек (в пределах максимума) не нашлось.", reply_markup=main_menu())
+        bot.send_message(chat_id, "😕 Похожих ячеек не нашлось.", reply_markup=main_menu())
         return
 
-    # Формируем ответ с невидимым символом перед каждым номером
-    reply = f"🔍 **Возможно, товар в одной из этих ячеек:**\n"
+    reply = "🔍 **Возможно, товар в одной из этих ячеек:**\n"
     chunks = [similar[i:i+6] for i in range(0, len(similar), 6)]
     for chunk in chunks:
-        line = "  ".join(f"\u200B{num}" for num in chunk)
-        reply += line + "\n"
+        reply += "  ".join(f"\u200B{num}" for num in chunk) + "\n"
 
-    rotated = rotate_number(number)
-    if rotated is not None and rotated in similar:
-        reply += "\n🔄 *Обратите внимание:* этот номер мог быть перевёрнут."
+    if rotate_number(number) in similar:
+        reply += "\n🔄 *Возможно, номер был перевёрнут.*"
 
     bot.send_message(chat_id, reply, parse_mode="Markdown", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "⚙️ Установить максимум")
-def setmax_button(message):
-    setmax_command(message)
+def ask_setmax(message):
+    msg = bot.send_message(
+        message.chat.id,
+        "🔢 Введите новый максимальный номер ячейки (например, 500):",
+        reply_markup=telebot.types.ReplyKeyboardRemove()
+    )
+    bot.register_next_step_handler(msg, process_setmax)
+
+def process_setmax(message):
+    chat_id = message.chat.id
+    try:
+        value = int(message.text.strip())
+        if 10 <= value <= 2000:
+            set_max_cell(chat_id, value)
+            bot.send_message(chat_id, f"✅ Максимум установлен: {value}", reply_markup=main_menu())
+        else:
+            bot.send_message(chat_id, "❓ Введите число от 10 до 2000.", reply_markup=main_menu())
+    except ValueError:
+        bot.send_message(chat_id, "❓ Это не число.", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📏 Текущий максимум")
-def showmax_button(message):
-    showmax_command(message)
+def show_max(message):
+    max_cell = get_max_cell(message.chat.id)
+    bot.send_message(message.chat.id, f"📏 Текущий максимум: {max_cell}", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "❓ Помощь")
-def help_button(message):
-    chat_id = message.chat.id
-    help_text = (
-        "❓ **Помощь по боту**\n\n"
-        "🔍 **Проверить ячейку** — введи номер, и я покажу похожие варианты.\n"
-        "⚙️ **Установить максимум** — задай максимальный номер ячейки на твоём складе.\n"
-        "📏 **Текущий максимум** — показывает, какой максимум установлен сейчас.\n\n"
-        "Если у тебя есть предложения или вопросы, пиши @твой\\_никнейм."
+def help(message):
+    bot.send_message(
+        message.chat.id,
+        "❓ **Помощь**\n\n"
+        "🔍 **Проверить ячейку** — введите номер, я покажу похожие.\n"
+        "⚙️ **Установить максимум** — задайте максимальный номер.\n"
+        "📏 **Текущий максимум** — показывает текущий.",
+        parse_mode="Markdown",
+        reply_markup=main_menu()
     )
-    bot.send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=main_menu())
 
-@bot.message_handler(func=lambda m: True)
-def fallback(message):
-    # Если пользователь просто отправил текст (не нажимал кнопку), перенаправляем на проверку ячейки
-    chat_id = message.chat.id
-    # Пытаемся распознать число
-    text = message.text.strip()
-    try:
-        number = int(text)
-        # Если это число, обрабатываем как ячейку
-        process_cell(message)
-    except ValueError:
-        # Иначе предлагаем меню
-        bot.send_message(chat_id, "Пожалуйста, используй кнопки меню 👇", reply_markup=main_menu())
+# ---------- ВЕБХУК ----------
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    json_str = request.get_data().decode('UTF-8')
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return 'OK', 200
 
-if __name__ == "__main__":
-    print("🚀 Запуск бота...")
-    
-    # Принудительно удаляем вебхук перед стартом
+@app.route('/set_webhook')
+def set_webhook():
+    bot.remove_webhook()
+    time.sleep(0.5)
+    bot.set_webhook(url=WEBHOOK_URL + '/webhook')
+    return f"✅ Webhook set to {WEBHOOK_URL}/webhook", 200
+
+@app.route('/')
+def index():
+    return 'Бот работает!', 200
+
+# ---------- ЗАПУСК ----------
+if __name__ == '__main__':
+    print("🚀 Запуск Flask-приложения...")
+    # Удаляем старый вебхук при старте
     try:
         bot.remove_webhook()
-        print("✅ Вебхук удалён")
+        print("✅ Старый вебхук удалён")
     except Exception as e:
         print(f"⚠️ Ошибка при удалении вебхука: {e}")
     
-    # Небольшая пауза, чтобы Telegram обработал удаление
-    import time
-    time.sleep(1)
+    # Устанавливаем новый вебхук
+    bot.set_webhook(url=WEBHOOK_URL + '/webhook')
+    print(f"✅ Вебхук установлен на {WEBHOOK_URL}/webhook")
     
-    # Запускаем polling
-    print("🔄 Запуск polling...")
-    bot.infinity_polling()
+    # Запускаем Flask
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
