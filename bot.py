@@ -9,9 +9,7 @@ if not TOKEN:
     raise ValueError("❌ Переменная окружения BOT_TOKEN не задана!")
 
 # URL для вебхука (задаётся в переменной окружения на хостинге)
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
-if not WEBHOOK_URL:
-    raise ValueError("❌ Переменная окружения WEBHOOK_URL не задана!")
+WEBHOOK_URL = "https://bot_1770985044_4041_amiyabag.bothost.ru"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
